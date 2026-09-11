@@ -1,0 +1,49 @@
+# This workflow runs on every repository with the custom property `crabwatch` set to `true`.
+
+name: Crabwatch
+
+on:
+  pull_request:
+  # merge_group required for repositories that use merge queues
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group
+  merge_group:
+    types: [ checks_requested ]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Run zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download crabwatch zizmor config
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/rust-lang/crabwatch/contents/zizmor-default.yml \
+            -H "Accept: application/vnd.github.raw+json" > zizmor-default.yml
+
+      - name: Run zizmor
+        # A missing or empty root .github directory has nothing to audit.
+        if: ${{ hashFiles('.github/**') != '' }}
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          config: zizmor-default.yml
+          # Only lint the root .github directory.
+          # Ignore nested .github directories because they can belong to
+          # vendored projects or test fixtures.
+          inputs: .github/
+          # Don't fail on repositories without GitHub Actions workflows.
+          fail-on-no-inputs: false
+          persona: pedantic

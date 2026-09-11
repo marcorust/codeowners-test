@@ -1,0 +1,106 @@
+# This workflow runs on every repository with the custom property `crabwatch` set to `true`.
+
+name: Crabwatch PR 72 integration test
+
+on:
+  push:
+    branches: [test/crabwatch-pr72-c47da85]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: ${{ matrix.case }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: root-clean-nested-finding
+            expected: success
+          - case: root-finding
+            expected: failure
+          - case: missing-root
+            expected: skipped
+          - case: empty-root
+            expected: skipped
+          - case: empty-workflows
+            expected: skipped
+          - case: root-docs-only
+            expected: success
+          - case: root-hidden-file-only
+            expected: success
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Prepare isolated repository fixture
+        env:
+          CASE: ${{ matrix.case }}
+        run: python3 .crabwatch-pr72/prepare.py
+
+      - name: Download crabwatch zizmor config
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/rust-lang/crabwatch/contents/zizmor-default.yml \
+            -H "Accept: application/vnd.github.raw+json" > zizmor-default.yml
+
+      - name: Run zizmor
+        id: audit
+        continue-on-error: true
+        # A missing or empty root .github directory has nothing to audit.
+        if: ${{ hashFiles('.github/**') != '' }}
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          config: zizmor-default.yml
+          # Only lint the root .github directory.
+          # Ignore nested .github directories because they can belong to
+          # vendored projects or test fixtures.
+          inputs: .github/
+          # Don't fail on repositories without GitHub Actions workflows.
+          fail-on-no-inputs: false
+          persona: pedantic
+
+      - name: Assert PR behavior
+        if: ${{ always() }}
+        env:
+          CASE: ${{ matrix.case }}
+          EXPECTED: ${{ matrix.expected }}
+          ACTUAL: ${{ steps.audit.outcome }}
+        run: |
+          echo "Case: $CASE; expected: $EXPECTED; actual: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+          if [ "$EXPECTED" = failure ]; then
+            grep -q 'insecure-commands' "$RUNNER_TEMP/zizmor"
+          fi
+          echo "| $CASE | $EXPECTED | $ACTUAL |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Control - old settings detect nested finding
+        id: baseline
+        if: ${{ matrix.case == 'root-clean-nested-finding' }}
+        continue-on-error: true
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          config: zizmor-default.yml
+          fail-on-no-inputs: false
+          persona: pedantic
+
+      - name: Assert old settings fail on nested fixture
+        if: ${{ always() && matrix.case == 'root-clean-nested-finding' }}
+        env:
+          ACTUAL: ${{ steps.baseline.outcome }}
+        run: |
+          test "$ACTUAL" = failure
+          grep -q 'insecure-commands' "$RUNNER_TEMP/zizmor"
+          grep -q 'vendor/project/.github/workflows/finding.yml' "$RUNNER_TEMP/zizmor"
+          echo '| Old settings control | failure on nested finding | confirmed |' >> "$GITHUB_STEP_SUMMARY"
